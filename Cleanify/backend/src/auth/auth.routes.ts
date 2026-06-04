@@ -19,9 +19,8 @@ router.get("/login", (_req, res) => {
   const verifier = generateCodeVerifier();
   const challenge = generateCodeChallenge(verifier);
 
-  // Store verifier on session instead of a module-level global.
-  // This means each user/tab gets their own verifier, no race conditions.
-  _req.session.codeVerifier = verifier;
+  // Encode verifier in state param instead of session
+  const state = Buffer.from(verifier).toString('base64');
 
   const scope = [
     "playlist-read-private",
@@ -38,30 +37,26 @@ router.get("/login", (_req, res) => {
     redirect_uri: process.env.SPOTIFY_REDIRECT_URI,
     code_challenge_method: "S256",
     code_challenge: challenge,
+    state,
   });
 
   res.redirect(`https://accounts.spotify.com/authorize?${params}`);
 });
 
 router.get("/callback", async (req, res) => {
-  // Handle the case where the user denied access on Spotify's page
   if (req.query.error) {
     return res.status(400).json({ error: req.query.error });
   }
 
   const code = req.query.code as string;
+  const state = req.query.state as string;
 
-  if (!code) {
-    return res.status(400).json({ error: "No authorization code received" });
+  if (!code || !state) {
+    return res.status(400).json({ error: "Missing code or state" });
   }
 
-  const verifier = req.session.codeVerifier;
-
-  if (!verifier) {
-    return res
-      .status(400)
-      .json({ error: "No code verifier in session. Please log in again." });
-  }
+  // Decode verifier from state
+  const verifier = Buffer.from(state, 'base64').toString('utf-8');
 
   try {
     const response = await axios.post(
@@ -73,20 +68,11 @@ router.get("/callback", async (req, res) => {
         redirect_uri: process.env.SPOTIFY_REDIRECT_URI,
         code_verifier: verifier,
       }),
-      {
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
-      }
+      { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
     );
 
-    // Store token on session — persists across requests until cookie expires
     req.session.accessToken = response.data.access_token;
-
-    // Clean up verifier — it's single-use
-    delete req.session.codeVerifier;
-
-    res.send("Auth successful. You can close this tab.");
+    res.redirect("http://127.0.0.1:5173/playlists");
   } catch (error: any) {
     console.error("Token exchange failed:", error.response?.data || error.message);
     res.status(500).json({ error: "Failed to exchange authorization code" });

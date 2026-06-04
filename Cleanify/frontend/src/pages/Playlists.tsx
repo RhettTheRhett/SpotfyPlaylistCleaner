@@ -141,7 +141,7 @@ export default function Playlists() {
                   {playlist.name}
                 </p>
                 <p className="text-white/40 text-xs mt-0.5">
-                  {playlist.tracks.total} tracks
+                  {playlist.tracks?.total ?? playlist.items?.total ?? 0} tracks
                 </p>
               </motion.button>
             ))}

@@ -16,6 +16,10 @@ export interface Playlist {
   tracks: {
     total: number;
   };
+  items?: {
+  total: number;
+  href?: string;
+  };
   public: boolean;
   collaborative: boolean;
 }

@@ -54,6 +54,12 @@ export default function PlaylistDetail() {
       try {
         const res = await fetch(`/spotify/playlists/${id}/tracks`)
         if (res.status === 401) { navigate('/'); return }
+        if (res.status === 403) {
+          setTracks([])
+          setTracksError("This playlist can't be accessed due to Spotify restrictions.")
+          setTracksLoading(false)
+          return
+        }
         const data = await res.json()
         setTracks(Array.isArray(data) ? data : [])
       } finally {
