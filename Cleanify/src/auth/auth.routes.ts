@@ -2,6 +2,8 @@ import express from "express";
 import axios from "axios";
 import qs from "querystring";
 
+import { setAccessToken } from "./tokenStore";
+
 import {
   generateCodeChallenge,
   generateCodeVerifier,
@@ -42,36 +44,29 @@ router.get("/login", async (_req, res) => {
 router.get("/callback", async (req, res) => {
   const code = req.query.code as string;
 
-  try {
-    const response = await axios.post(
-      "https://accounts.spotify.com/api/token",
-      qs.stringify({
-        client_id: process.env.SPOTIFY_CLIENT_ID,
-        grant_type: "authorization_code",
-        code,
-        redirect_uri: process.env.SPOTIFY_REDIRECT_URI,
-        code_verifier: verifierStore,
-      }),
-      {
-        headers: {
-          "Content-Type":
-            "application/x-www-form-urlencoded",
-        },
-      }
-    );
+  const response = await axios.post(
+    "https://accounts.spotify.com/api/token",
+    qs.stringify({
+      client_id: process.env.SPOTIFY_CLIENT_ID,
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: process.env.SPOTIFY_REDIRECT_URI,
+      code_verifier: verifierStore,
+    }),
+    {
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+    }
+  );
 
-    const data = response.data;
+  const token = response.data.access_token;
 
-    console.log(data);
+  console.log("ACCESS TOKEN RECEIVED:", token);
 
-    res.json(data);
-  } catch (error: any) {
-    console.error(error.response?.data || error.message);
+  setAccessToken(token);
 
-    res.status(500).json({
-      error: "Authentication failed",
-    });
-  }
+  res.send("Auth successful");
 });
 
 export default router;
