@@ -1,0 +1,297 @@
+import axios from "axios";
+
+// ── Types ────────────────────────────────────────────────────────────────────
+
+export interface Track {
+  id: string;
+  name: string;
+  artists: string[];
+  album: string;
+  explicit: boolean;
+  uri: string;
+}
+
+export interface CleanifyReport {
+  originalPlaylist: string;
+  newPlaylistId: string;
+  newPlaylistUrl: string;
+  totalTracksProcessed: number;
+  keptClean: Track[];
+  substituted: { original: Track; replacement: Track }[];
+  unresolved: Track[];
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function spotifyHeaders(token: string) {
+  return { Authorization: `Bearer ${token}` };
+}
+
+// Normalize a track title for comparison — strips features, punctuation,
+// and common suffixes so "Song Name (feat. X) - Radio Edit" matches "Song Name"
+function normalizeTitle(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/\(feat\..*?\)/gi, "")
+    .replace(/\(ft\..*?\)/gi, "")
+    .replace(/- radio edit/gi, "")
+    .replace(/- clean( version)?/gi, "")
+    .replace(/- clean edit/gi, "")
+    .replace(/[^a-z0-9 ]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Score how good a candidate clean track is vs the original.
+// Higher is better. Returns -1 if the candidate is explicit (disqualified).
+function scoreCandidate(original: Track, candidate: any): number {
+  if (candidate.explicit) return -1;
+
+  const originalTitle = normalizeTitle(original.name);
+  const candidateTitle = normalizeTitle(candidate.name);
+  const originalArtist = original.artists[0]?.toLowerCase() ?? "";
+  const candidateArtists: string[] = candidate.artists.map((a: any) =>
+    a.name.toLowerCase()
+  );
+
+  let score = 0;
+
+  // Must have at least one matching artist
+  if (!candidateArtists.some((a) => a.includes(originalArtist) || originalArtist.includes(a))) {
+    return -1;
+  }
+
+  // Title similarity
+  if (candidateTitle === originalTitle) {
+    score += 10; // exact match after normalization
+  } else if (candidateTitle.includes(originalTitle) || originalTitle.includes(candidateTitle)) {
+    score += 5; // partial match
+  } else {
+    return -1; // title too different — not the same song
+  }
+
+  // Prefer versions explicitly labeled as clean/radio edit
+  const rawTitle = candidate.name.toLowerCase();
+  if (rawTitle.includes("clean")) score += 3;
+  if (rawTitle.includes("radio edit")) score += 2;
+
+  // Prefer higher popularity (more likely to be the canonical version)
+  score += (candidate.popularity ?? 0) / 20;
+
+  return score;
+}
+
+// ── Core Functions ───────────────────────────────────────────────────────────
+
+// Fetch all tracks from a playlist, handling Spotify's 100-item page limit
+async function fetchAllTracks(token: string, playlistId: string): Promise<Track[]> {
+  const tracks: Track[] = [];
+  let nextUrl: string | null =
+    `https://api.spotify.com/v1/playlists/${playlistId}/items?limit=100`;
+
+  while (nextUrl !== null) {
+    const currentUrl: string = nextUrl;
+    const response = await axios.get(currentUrl, {
+      headers: spotifyHeaders(token),
+    });
+
+    const items: any[] = response.data.items ?? [];
+
+    for (const item of items) {
+      const t = item.item ?? item.track;
+      if (!t || t.type !== "track") continue;
+
+      tracks.push({
+        id: t.id,
+        name: t.name,
+        artists: t.artists.map((a: any) => a.name),
+        album: t.album.name,
+        explicit: t.explicit,
+        uri: t.uri,
+      });
+    }
+
+    nextUrl = response.data.next ?? null;
+  }
+
+  return tracks;
+}
+
+// Search for a clean version of a single explicit track.
+// Runs two searches ("clean" and "radio edit") and picks the best scoring result.
+async function findCleanVersion(
+  token: string,
+  track: Track
+): Promise<Track | null> {
+  const artistQuery = track.artists[0] ?? "";
+  const queries = [
+    `${track.name} ${artistQuery} clean`,
+    `${track.name} ${artistQuery} radio edit`,
+  ];
+
+  let bestCandidate: any = null;
+  let bestScore = -1;
+
+  for (const query of queries) {
+    try {
+      const response = await axios.get(
+        "https://api.spotify.com/v1/search",
+        {
+          headers: spotifyHeaders(token),
+          params: {
+            q: query,
+            type: "track",
+            limit: 10, // Spotify's current max for dev mode
+          },
+        }
+      );
+
+      const candidates = response.data.tracks?.items ?? [];
+
+      for (const candidate of candidates) {
+        const score = scoreCandidate(track, candidate);
+        if (score > bestScore) {
+          bestScore = score;
+          bestCandidate = candidate;
+        }
+      }
+    } catch (error: any) {
+      // Log but don't throw — a failed search for one track shouldn't
+      // kill the whole pipeline
+      console.error(
+        `Search failed for "${track.name}":`,
+        error.response?.data || error.message
+      );
+    }
+  }
+
+  if (!bestCandidate) return null;
+
+  return {
+    id: bestCandidate.id,
+    name: bestCandidate.name,
+    artists: bestCandidate.artists.map((a: any) => a.name),
+    album: bestCandidate.album.name,
+    explicit: bestCandidate.explicit,
+    uri: bestCandidate.uri,
+  };
+}
+
+// Create a new empty playlist on the user's account
+async function createPlaylist(
+  token: string,
+  userId: string,
+  name: string,
+  description: string
+): Promise<{ id: string; url: string }> {
+  const response = await axios.post(
+    `https://api.spotify.com/v1/me/playlists`,
+    { name, description, public: false },
+    { headers: { ...spotifyHeaders(token), "Content-Type": "application/json" } }
+  );
+
+  return {
+    id: response.data.id,
+    url: response.data.external_urls.spotify,
+  };
+}
+
+// Add tracks to a playlist in batches of 100 (Spotify's limit per request)
+async function addTracksToPlaylist(
+  token: string,
+  playlistId: string,
+  uris: string[]
+): Promise<void> {
+  const BATCH_SIZE = 100;
+
+  for (let i = 0; i < uris.length; i += BATCH_SIZE) {
+    const batch = uris.slice(i, i + BATCH_SIZE);
+    await axios.post(
+      `https://api.spotify.com/v1/playlists/${playlistId}/items`,
+      { uris: batch },
+      { headers: { ...spotifyHeaders(token), "Content-Type": "application/json" } }
+    );
+  }
+}
+
+// ── Main Export ──────────────────────────────────────────────────────────────
+
+export async function cleanifyPlaylist(
+  token: string,
+  userId: string,
+  playlistId: string,
+  playlistName: string
+): Promise<CleanifyReport> {
+  console.log(`Starting cleanify for playlist: ${playlistName}`);
+
+  // Step 1 — fetch all tracks
+  const allTracks = await fetchAllTracks(token, playlistId);
+  console.log(`Fetched ${allTracks.length} tracks`);
+
+  // Step 2 — separate clean from explicit
+  // Deduplicate by track ID while we're at it
+  const seen = new Set<string>();
+  const cleanTracks: Track[] = [];
+  const explicitTracks: Track[] = [];
+
+  for (const track of allTracks) {
+    if (seen.has(track.id)) continue;
+    seen.add(track.id);
+    if (track.explicit) {
+      explicitTracks.push(track);
+    } else {
+      cleanTracks.push(track);
+    }
+  }
+
+  console.log(`Clean: ${cleanTracks.length}, Explicit: ${explicitTracks.length}`);
+
+  // Step 3 — find clean versions of explicit tracks
+  const substituted: CleanifyReport["substituted"] = [];
+  const unresolved: Track[] = [];
+
+  for (const track of explicitTracks) {
+    console.log(`Searching clean version for: ${track.name}`);
+    const cleanVersion = await findCleanVersion(token, track);
+
+    if (cleanVersion) {
+      substituted.push({ original: track, replacement: cleanVersion });
+    } else {
+      unresolved.push(track);
+    }
+  }
+
+  console.log(`Substituted: ${substituted.length}, Unresolved: ${unresolved.length}`);
+
+  // Step 4 — create new playlist
+  const newPlaylist = await createPlaylist(
+    token,
+    userId,
+    `${playlistName} - Clean`,
+    `Clean version of ${playlistName}, generated by Cleanify`
+  );
+
+  console.log(`Created playlist: ${newPlaylist.id}`);
+
+  // Step 5 — add all tracks to new playlist
+  const urisToAdd = [
+    ...cleanTracks.map((t) => t.uri),
+    ...substituted.map((s) => s.replacement.uri),
+  ];
+
+  if (urisToAdd.length > 0) {
+    await addTracksToPlaylist(token, newPlaylist.id, urisToAdd);
+  }
+
+  console.log(`Added ${urisToAdd.length} tracks to new playlist`);
+
+  return {
+    originalPlaylist: playlistName,
+    newPlaylistId: newPlaylist.id,
+    newPlaylistUrl: newPlaylist.url,
+    totalTracksProcessed: allTracks.length,
+    keptClean: cleanTracks,
+    substituted,
+    unresolved,
+  };
+}
