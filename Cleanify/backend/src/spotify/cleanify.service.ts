@@ -117,6 +117,7 @@ async function fetchAllTracks(token: string, playlistId: string): Promise<Track[
   return tracks;
 }
 
+
 // Search for a clean version of a single explicit track.
 // Runs two searches ("clean" and "radio edit") and picks the best scoring result.
 async function findCleanVersion(
@@ -214,29 +215,24 @@ async function addTracksToPlaylist(
   }
 }
 
-// ── Main Export ──────────────────────────────────────────────────────────────
 
-export async function cleanifyPlaylist(
+async function cleanifyTracksInternal(
   token: string,
   userId: string,
-  playlistId: string,
+  allTracks: Track[],
   playlistName: string
 ): Promise<CleanifyReport> {
   console.log(`Starting cleanify for playlist: ${playlistName}`);
 
-  // Step 1 — fetch all tracks
-  const allTracks = await fetchAllTracks(token, playlistId);
-  console.log(`Fetched ${allTracks.length} tracks`);
-
-  // Step 2 — separate clean from explicit
-  // Deduplicate by track ID while we're at it
   const seen = new Set<string>();
   const cleanTracks: Track[] = [];
   const explicitTracks: Track[] = [];
 
   for (const track of allTracks) {
     if (seen.has(track.id)) continue;
+
     seen.add(track.id);
+
     if (track.explicit) {
       explicitTracks.push(track);
     } else {
@@ -244,26 +240,32 @@ export async function cleanifyPlaylist(
     }
   }
 
-  console.log(`Clean: ${cleanTracks.length}, Explicit: ${explicitTracks.length}`);
+  console.log(
+    `Clean: ${cleanTracks.length}, Explicit: ${explicitTracks.length}`
+  );
 
-  // Step 3 — find clean versions of explicit tracks
   const substituted: CleanifyReport["substituted"] = [];
   const unresolved: Track[] = [];
 
   for (const track of explicitTracks) {
     console.log(`Searching clean version for: ${track.name}`);
+
     const cleanVersion = await findCleanVersion(token, track);
 
     if (cleanVersion) {
-      substituted.push({ original: track, replacement: cleanVersion });
+      substituted.push({
+        original: track,
+        replacement: cleanVersion,
+      });
     } else {
       unresolved.push(track);
     }
   }
 
-  console.log(`Substituted: ${substituted.length}, Unresolved: ${unresolved.length}`);
+  console.log(
+    `Substituted: ${substituted.length}, Unresolved: ${unresolved.length}`
+  );
 
-  // Step 4 — create new playlist
   const newPlaylist = await createPlaylist(
     token,
     userId,
@@ -273,25 +275,65 @@ export async function cleanifyPlaylist(
 
   console.log(`Created playlist: ${newPlaylist.id}`);
 
-  // Step 5 — add all tracks to new playlist
   const urisToAdd = [
     ...cleanTracks.map((t) => t.uri),
     ...substituted.map((s) => s.replacement.uri),
   ];
 
   if (urisToAdd.length > 0) {
-    await addTracksToPlaylist(token, newPlaylist.id, urisToAdd);
+    await addTracksToPlaylist(
+      token,
+      newPlaylist.id,
+      urisToAdd
+    );
   }
 
-  console.log(`Added ${urisToAdd.length} tracks to new playlist`);
+  console.log(
+    `Added ${urisToAdd.length} tracks to new playlist`
+  );
 
   return {
-    originalPlaylist: playlistName,
-    newPlaylistId: newPlaylist.id,
-    newPlaylistUrl: newPlaylist.url,
-    totalTracksProcessed: allTracks.length,
-    keptClean: cleanTracks,
-    substituted,
-    unresolved,
-  };
+  originalPlaylist: playlistName,
+  newPlaylistId: newPlaylist.id,
+  newPlaylistUrl: newPlaylist.url,
+  totalTracksProcessed: allTracks.length,
+  keptClean: cleanTracks ?? [],
+  substituted: substituted ?? [],
+  unresolved: unresolved ?? [],
+};
+}
+
+// ── Main Export ──────────────────────────────────────────────────────────────
+
+export async function cleanifyPlaylist(
+  token: string,
+  userId: string,
+  playlistId: string,
+  playlistName: string
+): Promise<CleanifyReport> {
+  const tracks = await fetchAllTracks(
+    token,
+    playlistId
+  );
+
+  return cleanifyTracksInternal(
+    token,
+    userId,
+    tracks,
+    playlistName
+  );
+}
+
+export async function cleanifyTracks(
+  token: string,
+  userId: string,
+  tracks: Track[],
+  playlistName: string
+): Promise<CleanifyReport> {
+  return cleanifyTracksInternal(
+    token,
+    userId,
+    tracks,
+    playlistName
+  );
 }
