@@ -89,44 +89,52 @@ const res = await fetch(endpoint, {
   }, [id, navigate, playlist])
 
   const handleCleanify = async () => {
-
-    if ( id === "liked-songs" && tracks.length > 500) {
-      const confirmed = window.confirm(
+  if (id === "liked-songs" && tracks.length > 500) {
+    const confirmed = window.confirm(
       `You have ${tracks.length} liked songs. Cleaning them may take several minutes. Continue?`
-  )
+    )
+    if (!confirmed) return
+  }
 
-  if (!confirmed) return
-}
+  setStage('loading')
+  setProgress(0)
 
-    setStage('loading')
-    setProgress(0)
+  progressInterval.current = setInterval(() => {
+    setProgress(p => {
+      if (p >= 85) { clearInterval(progressInterval.current!); return 85 }
+      return p + (Math.random() * 3)
+    })
+  }, 400)
 
-    // Fake progress bar — the real request is slow so we animate optimistically
-    progressInterval.current = setInterval(() => {
-      setProgress(p => {
-        if (p >= 85) { clearInterval(progressInterval.current!); return 85 }
-        return p + (Math.random() * 3)
-      })
-    }, 400)
+  try {
+    const endpoint = id === "liked-songs"
+      ? "/spotify/liked/cleanify"
+      : `/spotify/playlists/${id}/cleanify`
 
-    try {
-      const res = await fetch(`/spotify/playlists/${id}/cleanify`, { method: 'POST' })
-      const data: CleanifyReport = await res.json()
+    const res = await fetch(endpoint, { method: 'POST' })
+    const data = await res.json()
 
-      clearInterval(progressInterval.current!)
-      setProgress(100)
-
-      setTimeout(() => {
-        setReport(data)
-        setStage('done')
-        setShowConfetti(true)
-        setTimeout(() => setShowConfetti(false), 4000)
-      }, 600)
-    } catch {
+    if (!res.ok || data.error || !data.unresolved) {
       clearInterval(progressInterval.current!)
       setStage('detail')
+      console.error('Cleanify failed:', data.error?.message ?? data)
+      return
     }
+
+    clearInterval(progressInterval.current!)
+    setProgress(100)
+
+    setTimeout(() => {
+      setReport(data as CleanifyReport)
+      setStage('done')
+      setShowConfetti(true)
+      setTimeout(() => setShowConfetti(false), 4000)
+    }, 600)
+  } catch {
+    clearInterval(progressInterval.current!)
+    setStage('detail')
   }
+}
 
   const coverUrl = playlist?.images?.[0]?.url
 

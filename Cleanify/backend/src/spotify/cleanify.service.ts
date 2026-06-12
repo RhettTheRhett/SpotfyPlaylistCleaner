@@ -118,12 +118,43 @@ async function fetchAllTracks(token: string, playlistId: string): Promise<Track[
 }
 
 
-// Search for a clean version of a single explicit track.
-// Runs two searches ("clean" and "radio edit") and picks the best scoring result.
-async function findCleanVersion(
+// Pause execution for ms milliseconds
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Retry a Spotify search request up to maxRetries times on 429.
+// Respects the Retry-After header if Spotify sends one.
+async function spotifySearchWithRetry(
   token: string,
-  track: Track
-): Promise<Track | null> {
+  params: Record<string, any>,
+  maxRetries = 3
+): Promise<any> {
+  let delay = 1000;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await axios.get("https://api.spotify.com/v1/search", {
+        headers: spotifyHeaders(token),
+        params,
+      });
+      return response;
+    } catch (error: any) {
+      const status = error.response?.status;
+      if (status === 429) {
+        const retryAfter = parseInt(error.response?.headers?.["retry-after"] ?? "1", 10);
+        const waitMs = Math.max(retryAfter * 1000, delay);
+        console.warn(`Rate limited. Waiting ${waitMs}ms before retry ${attempt + 1}/${maxRetries}`);
+        if (attempt === maxRetries) throw error;
+        await sleep(waitMs);
+        delay *= 2; // exponential backoff
+      } else {
+        throw error; // non-429 errors bubble up immediately
+      }
+    }
+  }
+}
+
+async function findCleanVersion(token: string, track: Track): Promise<Track | null> {
   const artistQuery = track.artists[0] ?? "";
   const queries = [
     `${track.name} ${artistQuery} clean`,
@@ -135,20 +166,12 @@ async function findCleanVersion(
 
   for (const query of queries) {
     try {
-      const response = await axios.get(
-        "https://api.spotify.com/v1/search",
-        {
-          headers: spotifyHeaders(token),
-          params: {
-            q: query,
-            type: "track",
-            limit: 10, // Spotify's current max for dev mode
-          },
-        }
-      );
+      const response = await axios.get("https://api.spotify.com/v1/search", {
+        headers: spotifyHeaders(token),
+        params: { q: query, type: "track", limit: 10 },
+      });
 
       const candidates = response.data.tracks?.items ?? [];
-
       for (const candidate of candidates) {
         const score = scoreCandidate(track, candidate);
         if (score > bestScore) {
@@ -157,17 +180,15 @@ async function findCleanVersion(
         }
       }
     } catch (error: any) {
-      // Log but don't throw — a failed search for one track shouldn't
-      // kill the whole pipeline
       console.error(
         `Search failed for "${track.name}":`,
-        error.response?.data || error.message
+        error.response?.status,
+        error.response?.data?.error?.message ?? error.message
       );
     }
   }
 
   if (!bestCandidate) return null;
-
   return {
     id: bestCandidate.id,
     name: bestCandidate.name,
@@ -247,18 +268,25 @@ async function cleanifyTracksInternal(
   const substituted: CleanifyReport["substituted"] = [];
   const unresolved: Track[] = [];
 
-  for (const track of explicitTracks) {
-    console.log(`Searching clean version for: ${track.name}`);
+  const BATCH_SIZE = 3;      // 3 tracks × 2 queries = 6 requests per batch
+  const BATCH_DELAY_MS = 500; // 500ms between batches → ~12 req/s, well under Spotify's 30/s burst
 
-    const cleanVersion = await findCleanVersion(token, track);
-
-    if (cleanVersion) {
-      substituted.push({
-        original: track,
-        replacement: cleanVersion,
-      });
-    } else {
-      unresolved.push(track);
+  for (let i = 0; i < explicitTracks.length; i += BATCH_SIZE) {
+    const batch = explicitTracks.slice(i, i + BATCH_SIZE);
+    const results = await Promise.all(
+      batch.map(track => findCleanVersion(token, track))
+    );
+    for (let j = 0; j < batch.length; j++) {
+      const cleanVersion = results[j];
+      if (cleanVersion) {
+        substituted.push({ original: batch[j], replacement: cleanVersion });
+      } else {
+        unresolved.push(batch[j]);
+      }
+    }
+    // Don't delay after the last batch
+    if (i + BATCH_SIZE < explicitTracks.length) {
+      await sleep(BATCH_DELAY_MS);
     }
   }
 
