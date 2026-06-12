@@ -28,7 +28,7 @@ export default function Landing() {
           <div className="w-8 h-8 rounded-full bg-[#1DB954] flex items-center justify-center">
             <Music2 size={16} className="text-black" />
           </div>
-          <span className="font-bold text-lg tracking-tight">Cleanify</span>
+          <span className="font-bold text-lg tracking-tight">Spotless</span>
         </motion.div>
         <motion.a
           initial={{ opacity: 0, x: 20 }}
@@ -77,7 +77,7 @@ export default function Landing() {
           transition={{ delay: 0.3 }}
           className="text-white/50 text-lg md:text-xl max-w-xl leading-relaxed mb-12"
         >
-          Cleanify scans your Spotify playlists, swaps explicit tracks for
+          Spotless scans your Spotify playlists, swaps explicit tracks for
           clean versions automatically, and creates a brand new playlist —
           ready to share with anyone.
         </motion.p>
