@@ -28,6 +28,7 @@ router.get("/login", (_req, res) => {
     "playlist-modify-private",
     "playlist-modify-public",
     "user-read-private",
+    "user-library-read",
   ].join(" ");
 
   const params = qs.stringify({

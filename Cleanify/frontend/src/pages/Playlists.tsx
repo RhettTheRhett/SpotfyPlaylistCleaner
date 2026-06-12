@@ -15,10 +15,12 @@ export default function Playlists() {
     async function load() {
       try {
         // Fetch user info and playlists in parallel
-        const [meRes, playlistsRes] = await Promise.all([
-          fetch('/spotify/me'),
-          fetch('/spotify/playlists'),
-        ])
+        const [meRes, playlistsRes, likedRes] = await Promise.all([
+            fetch('/spotify/me'),
+            fetch('/spotify/playlists'),
+            fetch('/spotify/liked/summary'),
+          ])
+          const liked = await likedRes.json()
 
         if (meRes.status === 401 || playlistsRes.status === 401) {
           navigate('/')
@@ -29,7 +31,26 @@ export default function Playlists() {
         const data = await playlistsRes.json()
 
         setUserName(me.display_name)
-        setPlaylists(data.items ?? [])
+        const likedSongsPlaylist = {
+            id: "liked-songs",
+            name: "Liked Songs",
+            description: "Your Spotify liked songs",
+            images: [],
+            owner: {
+              display_name: me.display_name,
+              id: me.id,
+            },
+            tracks: {
+              total: liked.total, // ✅ REAL VALUE NOW
+            },
+            public: false,
+            collaborative: false,
+          }
+
+setPlaylists([
+  likedSongsPlaylist,
+  ...(data.items ?? []),
+])
       } catch {
         setError('Failed to load playlists. Please try again.')
       } finally {
@@ -122,7 +143,11 @@ export default function Playlists() {
               >
                 {/* Cover art */}
                 <div className="aspect-square rounded-xl overflow-hidden bg-white/[0.06] mb-3 relative">
-                  {playlist.images?.[0]?.url ? (
+                  {playlist.id === "liked-songs" ? (
+                      <div className="w-full h-full bg-[#1DB954] flex items-center justify-center">
+                        <Music2 size={48} className="text-black" />
+                      </div>
+                    ) : playlist.images?.[0]?.url ? (
                     <img
                       src={playlist.images[0].url}
                       alt={playlist.name}

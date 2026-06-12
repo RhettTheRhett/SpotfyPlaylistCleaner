@@ -46,19 +46,22 @@ export default function PlaylistDetail() {
   const [report, setReport] = useState<CleanifyReport | null>(null)
   const [showConfetti, setShowConfetti] = useState(false)
   const progressInterval = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [tracksError, setTracksError] = useState<string | null>(null)
 
   const explicitCount = tracks.filter(t => t.explicit).length
 
   useEffect(() => {
     async function loadTracks() {
-      try {
-        const res = await fetch(`/spotify/playlists/${id}/tracks`)
+      try { 
+        const endpoint = id === "liked-songs" ? "/spotify/liked/tracks" : `/spotify/playlists/${id}/tracks`;
+
+const res = await fetch(endpoint);
         if (res.status === 401) { navigate('/'); return }
         if (res.status === 403) {
-          setTracks([])
-          setTracksError("This playlist can't be accessed due to Spotify restrictions.")
-          setTracksLoading(false)
-          return
+          setTracks([]);
+          setTracksError("This playlist is not accessible (Spotify restriction).");
+          setTracksLoading(false);
+          return;
         }
         const data = await res.json()
         setTracks(Array.isArray(data) ? data : [])
@@ -69,7 +72,11 @@ export default function PlaylistDetail() {
 
     // If we don't have playlist info from navigation state, fetch it
     async function loadPlaylist() {
-      const res = await fetch(`/spotify/playlists`)
+      const endpoint = id === "liked-songs" ? "/spotify/liked/cleanify" : `/spotify/playlists/${id}/cleanify`;
+
+const res = await fetch(endpoint, {
+  method: 'POST'
+})
       if (res.ok) {
         const data = await res.json()
         const found = data.items?.find((p: Playlist) => p.id === id)
@@ -82,35 +89,52 @@ export default function PlaylistDetail() {
   }, [id, navigate, playlist])
 
   const handleCleanify = async () => {
-    setStage('loading')
-    setProgress(0)
+  if (id === "liked-songs" && tracks.length > 500) {
+    const confirmed = window.confirm(
+      `You have ${tracks.length} liked songs. Cleaning them may take several minutes. Continue?`
+    )
+    if (!confirmed) return
+  }
 
-    // Fake progress bar — the real request is slow so we animate optimistically
-    progressInterval.current = setInterval(() => {
-      setProgress(p => {
-        if (p >= 85) { clearInterval(progressInterval.current!); return 85 }
-        return p + (Math.random() * 3)
-      })
-    }, 400)
+  setStage('loading')
+  setProgress(0)
 
-    try {
-      const res = await fetch(`/spotify/playlists/${id}/cleanify`, { method: 'POST' })
-      const data: CleanifyReport = await res.json()
+  progressInterval.current = setInterval(() => {
+    setProgress(p => {
+      if (p >= 85) { clearInterval(progressInterval.current!); return 85 }
+      return p + (Math.random() * 3)
+    })
+  }, 400)
 
-      clearInterval(progressInterval.current!)
-      setProgress(100)
+  try {
+    const endpoint = id === "liked-songs"
+      ? "/spotify/liked/cleanify"
+      : `/spotify/playlists/${id}/cleanify`
 
-      setTimeout(() => {
-        setReport(data)
-        setStage('done')
-        setShowConfetti(true)
-        setTimeout(() => setShowConfetti(false), 4000)
-      }, 600)
-    } catch {
+    const res = await fetch(endpoint, { method: 'POST' })
+    const data = await res.json()
+
+    if (!res.ok || data.error || !data.unresolved) {
       clearInterval(progressInterval.current!)
       setStage('detail')
+      console.error('Cleanify failed:', data.error?.message ?? data)
+      return
     }
+
+    clearInterval(progressInterval.current!)
+    setProgress(100)
+
+    setTimeout(() => {
+      setReport(data as CleanifyReport)
+      setStage('done')
+      setShowConfetti(true)
+      setTimeout(() => setShowConfetti(false), 4000)
+    }, 600)
+  } catch {
+    clearInterval(progressInterval.current!)
+    setStage('detail')
   }
+}
 
   const coverUrl = playlist?.images?.[0]?.url
 
@@ -175,6 +199,16 @@ export default function PlaylistDetail() {
                 <p className="text-white/30 text-sm mb-6">
                   {playlist?.tracks?.total} tracks
                 </p>
+
+                {/* Liked Songs warning */}
+                {id === "liked-songs" && tracks.length > 500 && (
+                  <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-4 mb-6">
+                    <p className="text-yellow-300 text-sm">
+                      Large library detected ({tracks.length} songs).
+                      Cleaning liked songs may take several minutes.
+                    </p>
+                  </div>
+                )}
 
                 {/* Explicit counter */}
                 {!tracksLoading && (
@@ -323,7 +357,7 @@ export default function PlaylistDetail() {
               transition={{ delay: 0.3 }}
               className="text-white/40 mb-10"
             >
-              {report.keptClean.length} tracks kept · {report.substituted.length} swapped for clean versions
+              {report?.keptClean?.length ?? 0} tracks kept · {report?.substituted?.length ?? 0} swapped for clean versions
             </motion.p>
 
             {/* Stats row */}
@@ -335,8 +369,8 @@ export default function PlaylistDetail() {
             >
               {[
                 { label: 'Total tracks', value: report.totalTracksProcessed },
-                { label: 'Clean versions found', value: report.substituted.length },
-                { label: 'Could not convert', value: report.unresolved.length },
+                { label: 'Clean versions found', value: report?.substituted?.length ?? 0 },
+                { label: 'Could not convert', value: report?.unresolved?.length ?? 0 },
               ].map(s => (
                 <div key={s.label} className="bg-white/[0.04] border border-white/[0.08] rounded-xl py-4 px-3">
                   <p className="text-2xl font-black text-[#1DB954]">{s.value}</p>
