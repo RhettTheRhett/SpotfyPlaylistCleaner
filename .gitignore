@@ -399,3 +399,23 @@ FodyWeavers.xsd
 
 # JetBrains Rider
 *.sln.iml
+
+
+# Node
+node_modules/
+dist/
+build/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Prisma
+*.db
+*.db-journal
+
+node_modules
+dist
+.env
+/src/generated/prisma
