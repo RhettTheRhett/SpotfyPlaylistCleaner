@@ -76,7 +76,7 @@ setPlaylists([
           <div className="w-7 h-7 rounded-full bg-[#1DB954] flex items-center justify-center">
             <Music2 size={14} className="text-black" />
           </div>
-          <span className="font-bold tracking-tight">Cleanify</span>
+          <span className="font-bold tracking-tight">Spotless</span>
         </div>
         <div className="flex items-center gap-4">
           {userName && (
